@@ -154,3 +154,8 @@ memory/
 archive/
 # *.xlsx (Removed to allow data deployment)
 # *.pkl (Removed to allow model deployment)
+
+# Mac system files
+.DS_Store
+__MACOSX/
+._*
