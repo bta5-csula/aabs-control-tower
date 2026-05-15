@@ -2,22 +2,14 @@
 AABS Control Tower v8.3
 Enterprise Decision Intelligence Platform
 
-ML-ONLY VERSION (No AI dependency):
-- ML Risk Scoring: Random Forest (99% recall)
-- ML Demand Forecasting: Random Forest Regressor (R² = 0.981)
-- Fast, reliable, instant loads
-- Zero external dependencies
-
 FEATURES:
 - Real-time pipeline monitoring ($1.72B across 171K+ transactions)
-- Risk scoring with ML models
-- Demand forecasting with confidence intervals
+- Risk scoring with ML models (Random Forest, 99% recall)
+- Demand forecasting with confidence intervals (R² = 0.981)
 - External signal integration (traffic, weather, satellite)
+- Claude AI analysis — set ANTHROPIC_API_KEY to enable
 - What-if scenario analysis
 - Professional dashboards
-
-Note: This version removes local AI (Ollama) for faster loading.
-AI features can be re-enabled by upgrading to v9.0.
 """
 
 import streamlit as st
@@ -73,259 +65,25 @@ except ImportError:
     SKLEARN_AVAILABLE = False
 
 # ============================================================
-# STUB AI SERVICE (ML-only version)
+# AI SERVICE (Claude-backed)
 # ============================================================
 
-class LocalAIService:
-    """
-    Stub AI service for ML-only version.
-    Always returns unavailable - use rule-based fallbacks.
-    """
-    
-    def __init__(self):
-        self.available = False
-        self.model = "disabled"
-    
-    def _check_health(self) -> bool:
-        return False
-    
-    def analyze_order_risk(self, *args, **kwargs) -> str:
-        return "Manual risk review required. High line item count or large order value detected."
-    
-    def analyze_corridor_impact(self, *args, **kwargs) -> str:
-        return "Transit times affected by external corridor conditions. Recommend rerouting non-priority shipments."
-    
-    def generate_executive_brief(self, *args, **kwargs) -> str:
-        return "System state is stable but requires attention to high-risk orders. ML models indicate potential slippage in Q4 targets."
-    
-    def generate_smart_recommendation(self, *args, **kwargs) -> str:
-        return "Review high-risk items and follow established mitigation playbooks."
-    
-    def generate_consequence_analysis(self, *args, **kwargs) -> str:
-        return "Potential revenue leakage and logistics backlog if unaddressed in next 24 hours."
-    
-    def generate_escalation_card(self, *args, **kwargs) -> dict:
-        return {}
-    
-    def generate_mitigation_playbook(self, *args, **kwargs) -> dict:
-        return {}
-    
-    def generate_tradeoff_summary(self, *args, **kwargs) -> dict:
-        return {}
-    
-    def generate_daily_action_plan(self, *args, **kwargs) -> dict:
-        return {
-            'date': datetime.now().strftime('%Y-%m-%d'),
-            'generated_at': datetime.now().strftime('%H:%M'),
-            'actions': [{'action': 'Review system alerts', 'priority': 'HIGH'}],
-            'total_at_risk': 0,
-            'orders_to_review': 0
-        }
+from core.ai_service import ClaudeAIService
 
-
-# Initialize AI service (stub)
-# Initialize AI service (stub)
 @st.cache_resource
 def get_ai_service():
-    return LocalAIService()
+    """Return a singleton ClaudeAIService. Cached for the lifetime of the server process."""
+    return ClaudeAIService()
 
 # ============================================================
 # MEMORY SYSTEM - Learning Loops (SQLite Backend)
 # ============================================================
 
-import sqlite3
-import json
-import uuid
-from contextlib import contextmanager
-
-class MemorySystem:
-    """
-    Memory system for tracking recommendations, actions, and outcomes.
-    SQLite backend for performance, ACID compliance, and concurrent access.
-    """
-    
-    def __init__(self):
-        self.memory_dir = Path('memory')
-        self.memory_dir.mkdir(exist_ok=True)
-        self.db_path = self.memory_dir / 'control_tower.db'
-        self._init_db()
-    
-    @contextmanager
-    def _get_conn(self):
-        conn = sqlite3.connect(str(self.db_path), timeout=10)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-    
-    def _init_db(self):
-        with self._get_conn() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS recommendations (
-                    id TEXT PRIMARY KEY, type TEXT NOT NULL, content TEXT, context TEXT,
-                    timestamp TEXT NOT NULL, status TEXT DEFAULT 'pending',
-                    action_timestamp TEXT, action_notes TEXT, outcome TEXT,
-                    outcome_details TEXT, outcome_timestamp TEXT
-                )
-            ''')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_rec_timestamp ON recommendations(timestamp)')
-            cursor.execute('CREATE TABLE IF NOT EXISTS metrics (key TEXT PRIMARY KEY, value REAL, updated_at TEXT)')
-            cursor.execute('SELECT COUNT(*) FROM metrics')
-            if cursor.fetchone()[0] == 0:
-                default_metrics = [
-                    ('total_recommendations', 0), ('acted_on', 0), ('ignored', 0),
-                    ('modified', 0), ('successful_outcomes', 0), ('failed_outcomes', 0),
-                    ('pending_outcomes', 0), ('trust_score', 0.5)
-                ]
-                cursor.executemany('INSERT INTO metrics (key, value, updated_at) VALUES (?, ?, ?)',
-                                  [(k, v, datetime.now().isoformat()) for k, v in default_metrics])
-
-    def log_recommendation(self, rec_type: str, content: dict, context: dict = None) -> str:
-        rec_id = str(uuid.uuid4())[:8]
-        timestamp = datetime.now().isoformat()
-        with self._get_conn() as conn:
-            cursor = conn.cursor()
-            cursor.execute('INSERT INTO recommendations (id, type, content, context, timestamp, status) VALUES (?, ?, ?, ?, ?, "pending")',
-                          (rec_id, rec_type, json.dumps(content, default=str), json.dumps(context or {}, default=str), timestamp))
-            cursor.execute('UPDATE metrics SET value = value + 1, updated_at = ? WHERE key = ?', (timestamp, 'total_recommendations'))
-        return rec_id
-
-    def record_action(self, rec_id: str, action: str, notes: str = None):
-        timestamp = datetime.now().isoformat()
-        with self._get_conn() as conn:
-            cursor = conn.cursor()
-            cursor.execute('UPDATE recommendations SET status = ?, action_timestamp = ?, action_notes = ? WHERE id = ?', (action, timestamp, notes, rec_id))
-            metric_key = 'acted_on' if action == 'acted' else action
-            cursor.execute('UPDATE metrics SET value = value + 1, updated_at = ? WHERE key = ?', (timestamp, metric_key))
-
-    def record_outcome(self, rec_id: str, outcome: str, details: dict = None):
-        timestamp = datetime.now().isoformat()
-        with self._get_conn() as conn:
-            cursor = conn.cursor()
-            cursor.execute('UPDATE recommendations SET outcome = ?, outcome_details = ?, outcome_timestamp = ? WHERE id = ?',
-                          (outcome, json.dumps(details or {}, default=str), timestamp, rec_id))
-            if outcome == 'success':
-                cursor.execute('UPDATE metrics SET value = value + 1, updated_at = ? WHERE key = ?', (timestamp, 'successful_outcomes'))
-            elif outcome == 'failed':
-                cursor.execute('UPDATE metrics SET value = value + 1, updated_at = ? WHERE key = ?', (timestamp, 'failed_outcomes'))
-            self._recalculate_trust_score(cursor, timestamp)
-
-    def _recalculate_trust_score(self, cursor, timestamp):
-        cursor.execute('SELECT value FROM metrics WHERE key = "successful_outcomes"')
-        success = cursor.fetchone()[0]
-        cursor.execute('SELECT value FROM metrics WHERE key = "failed_outcomes"')
-        failed = cursor.fetchone()[0]
-        total = success + failed
-        if total > 0:
-            trust_score = round(success / total, 3)
-            cursor.execute('UPDATE metrics SET value = ?, updated_at = ? WHERE key = "trust_score"', (trust_score, timestamp))
-
-    def get_metrics(self) -> dict:
-        with self._get_conn() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT key, value FROM metrics')
-            return {row['key']: row['value'] for row in cursor.fetchall()}
-
-    def get_recent_recommendations(self, limit: int = 20) -> list:
-        with self._get_conn() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT * FROM recommendations ORDER BY timestamp DESC LIMIT ?', (limit,))
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_pending_outcomes(self) -> list:
-        with self._get_conn() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM recommendations WHERE status IN ('acted', 'modified') AND outcome IS NULL ORDER BY timestamp DESC LIMIT 20")
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_learning_insights(self) -> dict:
-        m = self.get_metrics()
-        total_recs = max(m.get('total_recommendations', 1), 1)
-        total_outcomes = max(m.get('successful_outcomes', 0) + m.get('failed_outcomes', 0), 1)
-        return {
-            'trust_score': m.get('trust_score', 0.5),
-            'total_recommendations': int(m.get('total_recommendations', 0)),
-            'action_rate': round(((m.get('acted_on', 0) + m.get('modified', 0)) / total_recs) * 100, 1),
-            'success_rate': round((m.get('successful_outcomes', 0) / total_outcomes) * 100, 1),
-            'recommendations_today': 0
-        }
+from core.memory import MemorySystem
 
 @st.cache_resource
 def get_memory_system():
     return MemorySystem()
-
-# ============================================================
-# ML MODEL LOADER & SCORING
-# ============================================================
-
-@st.cache_resource
-def load_ml_models():
-    models = {'risk': None, 'demand': None, 'available': False}
-    try:
-        if os.path.exists(Config.RISK_MODEL_PATH):
-            with open(Config.RISK_MODEL_PATH, 'rb') as f:
-                models['risk'] = pickle.load(f)
-        if os.path.exists(Config.DEMAND_MODEL_PATH):
-            with open(Config.DEMAND_MODEL_PATH, 'rb') as f:
-                models['demand'] = pickle.load(f)
-        if models['risk'] and models['demand']:
-            models['available'] = True
-    except Exception:
-        pass
-    return models
-
-def ml_score_orders(gbi_data: pd.DataFrame, ml_models: dict) -> pd.DataFrame:
-    if not ml_models['available'] or ml_models['risk'] is None:
-        return None
-    try:
-        risk_model = ml_models['risk']
-        model, feature_cols = risk_model['model'], risk_model['feature_cols']
-        le_country, le_salesorg = risk_model['le_country'], risk_model['le_salesorg']
-        df = gbi_data.groupby('OrderNumber').agg({
-            'OrderItem': 'count', 'SalesQuantity': 'sum', 'RevenueUSD': 'sum',
-            'CostsUSD': 'sum', 'DiscountUSD': 'sum', 'Product': 'nunique',
-            'Customer': 'first', 'Country': 'first', 'SalesOrg': 'first',
-            'Month': 'first', 'Year': 'first'
-        }).reset_index()
-        df.columns = ['OrderNumber', 'LineItems', 'TotalQuantity', 'TotalRevenue', 'TotalCost', 'TotalDiscount', 'ProductDiversity', 'Customer', 'Country', 'SalesOrg', 'Month', 'Year']
-        df['Country_enc'] = df['Country'].apply(lambda x: le_country.transform([x])[0] if x in le_country.classes_ else 0)
-        df['SalesOrg_enc'] = df['SalesOrg'].apply(lambda x: le_salesorg.transform([x])[0] if x in le_salesorg.classes_ else 0)
-        X = df[feature_cols].fillna(0)
-        df['RiskProbability'] = model.predict_proba(X)[:, 1]
-        df['RiskCategory'] = pd.cut(df['RiskProbability'], bins=[0, 0.3, 0.7, 1.0], labels=['Low', 'Medium', 'High'])
-        return df.sort_values('RiskProbability', ascending=False)
-    except Exception:
-        return None
-
-def ml_forecast_demand(gbi_data: pd.DataFrame, ml_models: dict) -> pd.DataFrame:
-    if not ml_models['available'] or ml_models['demand'] is None:
-        return None
-    try:
-        demand_model = ml_models['demand']
-        model, feature_cols, cat_map = demand_model['model'], demand_model['feature_cols'], demand_model['category_map']
-        weekly = gbi_data.groupby(['Year', 'Month', 'ProductCategory']).agg({'SalesQuantity': 'sum'}).reset_index()
-        weekly.columns = ['Year', 'Month', 'Category', 'Quantity']
-        results = []
-        for cat in weekly['Category'].unique():
-            cat_data = weekly[weekly['Category'] == cat].iloc[-1:].copy()
-            cat_data['Category_enc'] = cat_map.get(cat, 0)
-            pred = model.predict(cat_data[feature_cols].fillna(0))[0]
-            last_qty = cat_data['Quantity'].values[0]
-            change = ((pred - last_qty) / last_qty * 100) if last_qty > 0 else 0
-            results.append({'Category': cat, 'Quantity': last_qty, 'ForecastedDemand': pred, 'Change': change, 'AlertType': 'SURGE' if change > 15 else 'DROP' if change < -15 else 'STABLE'})
-        return pd.DataFrame(results)
-    except Exception:
-        return None
-
-def orders_to_dict_list(ml_orders: pd.DataFrame, n: int = 10) -> List[dict]:
-    if ml_orders is None or len(ml_orders) == 0: return []
-    return [{'order_id': int(row['OrderNumber']), 'customer': int(row['Customer']), 'value': float(row['TotalRevenue']), 'risk_score': float(row['RiskProbability'])} for _, row in ml_orders.head(n).iterrows()]
 
 # ============================================================
 # DATA LOADER
@@ -348,16 +106,22 @@ def load_gbi_data():
     except Exception:
         return None, None, None, None
 
-@st.cache_resource
-def get_memory_system():
-    return MemorySystem()
-
 # ============================================================
 # SESSION STATE
 # ============================================================
 
 if 'mode' not in st.session_state:
     st.session_state.mode = "wall"
+if 'active_module' not in st.session_state:
+    st.session_state.active_module = "overview"
+if 'theme' not in st.session_state:
+    st.session_state.theme = "obsidian"
+if 'density' not in st.session_state:
+    st.session_state.density = "regular"
+if 'wall_variant' not in st.session_state:
+    st.session_state.wall_variant = "newsroom"
+if 'rail_collapsed' not in st.session_state:
+    st.session_state.rail_collapsed = False
 if 'refresh_count' not in st.session_state:
     st.session_state.refresh_count = 0
 if 'auto_refresh' not in st.session_state:
@@ -793,11 +557,24 @@ def generate_alerts(va05: pd.DataFrame, var_df: pd.DataFrame, signals: Dict, ml_
 # ============================================================
 
 def inject_styles():
-    """Load and inject custom CSS from assets/style.css."""
+    """Load and inject custom CSS and handle theme/density attributes."""
+    theme = st.session_state.get('theme', 'obsidian')
+    density = st.session_state.get('density', 'regular')
+    
     if os.path.exists(Config.CSS_PATH):
         with open(Config.CSS_PATH, 'r') as f:
             css = f.read()
+            # Wrap CSS in a style tag and also inject JS to set root attributes
             st.markdown(f'<style>{css}</style>', unsafe_allow_html=True)
+            
+    # Inject JS to set theme/density on root element (Streamlit specific hack)
+    st.markdown(f"""
+        <script>
+            var root = window.parent.document.documentElement;
+            root.dataset.theme = "{theme}";
+            root.dataset.density = "{density}";
+        </script>
+    """, unsafe_allow_html=True)
 
 # ============================================================
 # UTILS
@@ -1106,21 +883,198 @@ SCENARIO_PACKS = {
 # WALL MODE
 # ============================================================
 
+# ============================================================
+# WALL MODE VARIANTS
+# ============================================================
+
+def wall_kpi(label: str, value: str, sub: str = None, tone: str = None, size: str = "md"):
+    """Render a premium Wall KPI."""
+    sizes = {
+        "sm": {"v": "24px", "s": "10px"},
+        "md": {"v": "42px", "s": "11px"},
+        "lg": {"v": "56px", "s": "12px"},
+        "xl": {"v": "72px", "s": "13px"}
+    }
+    sz = sizes.get(size, sizes["md"])
+    color = "var(--red)" if tone == "red" else "var(--amber)" if tone == "amber" else "var(--green)" if tone == "green" else "var(--ink)"
+    
+    sub_html = f'<div class="mono" style="font-size: {sz["s"]}; color: var(--ink-2);">{sub}</div>' if sub else ""
+    
+    return f'''
+    <div style="display: flex; flexDirection: column; gap: 4px;">
+        <div class="lbl">{label}</div>
+        <div class="mono" style="font-size: {sz["v"]}; font-weight: 300; line-height: 1; letter-spacing: -0.02em; color: {color};">{value}</div>
+        {sub_html}
+    </div>
+    '''
+
+def wall_tile(title: str, subtitle: str = None, content: str = "", span: int = 1):
+    """Render a premium grid tile."""
+    sub_html = f'<div class="mono" style="font-size: 10px; color: var(--ink-3);">{subtitle}</div>' if subtitle else ""
+    return f'''
+    <div class="panel" style="grid-column: span {span}; display: flex; flex-direction: column;">
+        <div style="padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center;">
+            <div class="lbl lbl-strong">{title}</div>
+            {sub_html}
+        </div>
+        <div style="padding: 16px; flex: 1;">{content}</div>
+    </div>
+    '''
+
+def render_wall_newsroom(data: dict):
+    """Render the Newsroom wall layout."""
+    lead = data['alerts'][0] if data['alerts'] else {"title": "System Nominal", "detail": "All sectors reporting stable telemetry", "src": "Core"}
+    supp = data['alerts'][1:5]
+    
+    # KPI Strip
+    kpis = f'''
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; margin-bottom: 24px;">
+        {wall_kpi("Pipeline (active)", f"${data['total_pipeline']/1e6:.1f}M", f"{data['total_orders']:,} orders", size="lg")}
+        {wall_kpi("At-Risk Value", f"${data['at_risk_value']/1e6:.2f}M", f"{data['at_risk_pct']:.1f}% risk", tone="red", size="lg")}
+        {wall_kpi("High-Risk Orders", str(data['high_risk_count']), f"{len(data['alerts'])} alerts open", tone="amber" if data['high_risk_count'] < 50 else "red", size="lg")}
+        {wall_kpi("Trust Score", f"{data['trust_score']:.0f}%", f"{data['total_recs']} recommendations", tone="green" if data['trust_score'] > 80 else "amber", size="lg")}
+    </div>
+    '''
+    
+    # Lead Story
+    lead_html = f'''
+    <div class="panel" style="padding: 28px; display: flex; flex-direction: column; gap: 16px; min-height: 400px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div class="lbl" style="color: var(--accent); font-size: 12px;">● Lead · highest exposure</div>
+            <div class="mono" style="font-size: 11px; color: var(--ink-3);">{datetime.now().strftime('%H:%M:%S')}Z</div>
+        </div>
+        <div style="font-size: 56px; color: var(--ink); fontWeight: 300; letterSpacing: -0.02em; lineHeight: 1.05; font-family: var(--font-sans);">
+            {lead['title']}
+        </div>
+        <div style="font-size: 16px; color: var(--ink-1); lineHeight: 1.55; max-width: 720px;">
+            {lead['detail']}. Source: {lead['src']}.
+        </div>
+        <div style="flex: 1;"></div>
+        <div style="display: flex; gap: 48px; padding-top: 16px; border-top: 1px solid var(--line);">
+            {wall_kpi("ML Risk Mean", f"{(data['at_risk_pct']/100):.2f}", "composite", size="sm")}
+            {wall_kpi("Corridors Hit", f"{data['traffic_issues']}/4", "lanes degraded", tone="red" if data['traffic_issues'] > 1 else "amber", size="sm")}
+            {wall_kpi("Satellite Utilization", "88%", "mean capacity", size="sm")}
+        </div>
+    </div>
+    '''
+    
+    # Supporting Stream
+    supp_html = ""
+    for a in supp:
+        sev_class = "red" if a['sev'] == "CRITICAL" else "amber" if a['sev'] == "HIGH" else "green"
+        supp_html += f'''
+        <div style="padding: 16px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: center;">
+            <div class="dot {sev_class}"></div>
+            <div style="flex: 1;">
+                <div style="font-size: 15px; color: var(--ink); line-height: 1.3;">{a['title']}</div>
+                <div class="mono" style="font-size: 10px; color: var(--ink-2); margin-top: 4px;">{a['detail']}</div>
+            </div>
+        </div>
+        '''
+    
+    # Layout
+    st.markdown(kpis, unsafe_allow_html=True)
+    c1, c2 = st.columns([1.4, 1])
+    with c1:
+        st.markdown(lead_html, unsafe_allow_html=True)
+    with c2:
+        st.markdown(f'''
+        <div class="panel" style="display: flex; flex-direction: column; height: 100%;">
+            <div style="padding: 14px 20px; border-bottom: 1px solid var(--line);">
+                <div class="lbl lbl-strong">Supporting Alerts</div>
+            </div>
+            {supp_html}
+        </div>
+        ''', unsafe_allow_html=True)
+
+def render_wall_telemetry(data: dict):
+    """Render the Telemetry grid wall layout."""
+    # Top KPI Strip (6-up)
+    kpis = f'''
+    <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-bottom: 24px;">
+        <div style="background: var(--bg-1); padding: 16px;">{wall_kpi("Pipeline", f"${data['total_pipeline']/1e6:.1f}M")}</div>
+        <div style="background: var(--bg-1); padding: 16px;">{wall_kpi("Orders", f"{data['total_orders']:,}")}</div>
+        <div style="background: var(--bg-1); padding: 16px;">{wall_kpi("At-Risk $", f"${data['at_risk_value']/1e6:.2f}M", tone="red")}</div>
+        <div style="background: var(--bg-1); padding: 16px;">{wall_kpi("At-Risk %", f"{data['at_risk_pct']:.1f}%", tone="amber")}</div>
+        <div style="background: var(--bg-1); padding: 16px;">{wall_kpi("High-Risk", str(data['high_risk_count']), tone="red")}</div>
+        <div style="background: var(--bg-1); padding: 16px;">{wall_kpi("Trust", f"{data['trust_score']:.0f}%", tone="green")}</div>
+    </div>
+    '''
+    st.markdown(kpis, unsafe_allow_html=True)
+    
+    # 2x2 Grid of detailed tiles
+    c1, c2 = st.columns(2)
+    with c1:
+        # Corridors Tile
+        corridors_html = ""
+        for t in data['traffic']:
+            tone = "red" if t['level'] == "severe" else "amber" if t['level'] == "heavy" else "green"
+            corridors_html += f'''
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                <span style="font-size: 12px; color: var(--ink-1); flex: 1;">{t['corridor']}</span>
+                <span class="mono" style="font-size: 13px; color: var(--{tone});">{t['delay_ratio']}×</span>
+            </div>
+            '''
+        st.markdown(wall_tile("Corridor Telemetry", "live delay ratios", corridors_html), unsafe_allow_html=True)
+        
+        # Alerts Tile
+        alerts_html = ""
+        for a in data['alerts'][:5]:
+            sev_class = "red" if a['sev'] == "CRITICAL" else "amber" if a['sev'] == "HIGH" else "green"
+            alerts_html += f'''
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                <div class="dot {sev_class}"></div>
+                <span class="mono" style="font-size: 10px; color: var(--ink-3);">{datetime.now().strftime('%H:%M')}Z</span>
+                <span style="font-size: 11px; color: var(--ink-1); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{a['title']}</span>
+            </div>
+            '''
+        st.markdown(wall_tile("Alert Stream", "latest signals", alerts_html), unsafe_allow_html=True)
+        
+    with c2:
+        # Market Indicators Tile
+        m = data['market']
+        market_html = f'''
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+            <div><div class="lbl">Steel Index</div><div class="mono" style="font-size: 24px; color: var(--ink); font-weight: 300;">{m['steel_index']:.1f}</div></div>
+            <div><div class="lbl">Fuel Index</div><div class="mono" style="font-size: 24px; color: var(--ink); font-weight: 300;">{m['fuel_index']:.1f}</div></div>
+            <div><div class="lbl">Container Rate</div><div class="mono" style="font-size: 22px; color: var(--ink); font-weight: 300;">${m['container_rate']:,.0f}</div></div>
+            <div><div class="lbl">Consumer Conf</div><div class="mono" style="font-size: 24px; color: var(--green); font-weight: 300;">{m['consumer_confidence']:.1f}</div></div>
+        </div>
+        '''
+        st.markdown(wall_tile("Market Indicators", "global stress indexes", market_html), unsafe_allow_html=True)
+        
+        # Satellite Tile
+        sat_html = ""
+        for s in data['satellite']:
+            tone = "green" if s['trend'] == "increasing" else "red" if s['trend'] == "declining" else "cyan"
+            sat_html += f'''
+            <div style="margin-bottom: 10px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
+                    <span style="font-size: 12px; color: var(--ink-1);">{s['location']}</span>
+                    <span class="mono" style="font-size: 12px; color: var(--{tone});">{s['activity']*100:.0f}%</span>
+                </div>
+            </div>
+            '''
+        st.markdown(wall_tile("DC Utilization", "satellite activity", sat_html), unsafe_allow_html=True)
+
+# ============================================================
+# WALL MODE MAIN RENDERER
+# ============================================================
+
 def render_wall_mode():
-    """Render read-only wall display mode."""
+    """Render read-only wall display mode with multiple layout variants."""
     inject_styles()
     
+    # 1. DATA AGGREGATION
     ml_models = load_ml_models()
     ai_service = get_ai_service()
     actuals, plan, var_df, yearly = load_gbi_data()
     va05 = generate_va05_orders()
     signals = generate_external_signals()
-    
     ml_orders = ml_score_orders(actuals, ml_models) if actuals is not None else None
     alerts = generate_alerts(va05, var_df, signals, ml_orders)
-    
-    # Convert to dict for AI
-    top_orders = orders_to_dict_list(ml_orders, 10) if ml_orders is not None else []
+    memory = get_memory_system()
+    mem_stats = memory.get_learning_insights()
     
     # Calculate metrics
     if ml_orders is not None and len(ml_orders) > 0:
@@ -1136,135 +1090,279 @@ def render_wall_mode():
     
     at_risk_pct = at_risk_value / total_pipeline * 100 if total_pipeline > 0 else 0
     status = signals['summary']['overall']
-    status_class = status.lower()
     
-    # Header
-    badges = ""
-    if ml_models['available']:
-        badges += '<span class="ml-badge">🧠 ML</span>'
-    if ai_service.available:
-        badges += '<span class="ai-badge">🤖 AI</span>'
+    data_dict = {
+        "total_pipeline": total_pipeline,
+        "total_orders": total_orders,
+        "at_risk_value": at_risk_value,
+        "at_risk_pct": at_risk_pct,
+        "high_risk_count": high_risk_count,
+        "trust_score": mem_stats['trust_score'] * 100,
+        "total_recs": mem_stats['total_recommendations'],
+        "alerts": alerts,
+        "traffic": signals['traffic'],
+        "traffic_issues": signals['summary']['traffic'],
+        "satellite": signals['satellite'],
+        "market": signals['market'],
+        "system_status": status
+    }
     
+    # 2. TOP NAVIGATION / Variant Switcher
     st.markdown(f'''
-    <div class="main-header">
-        <div>{Config.APP_NAME} <span style="color:#64748b;font-size:14px;">v{Config.VERSION}</span>{badges}</div>
-        <div class="status-badge status-{status_class}">{status}</div>
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; padding-bottom: 12px; border-bottom: 1px solid var(--line);">
+        <div style="display: flex; align-items: center; gap: 16px;">
+            <div style="width: 24px; height: 24px; background: var(--accent); color: var(--bg); display: flex; align-items: center; justifyContent: center; font-family: var(--font-mono); font-weight: 700; font-size: 14px;">A</div>
+            <div class="lbl-strong" style="font-size: 14px; letter-spacing: 0.1em;">AABS CONTROL TOWER // WALL</div>
+        </div>
+        <div style="display: flex; gap: 8px;">
+            <span class="dot pulse {'red' if status == 'CRITICAL' else 'amber' if status == 'ELEVATED' else 'green'}" style="margin-right: 8px;"></span>
+            <div class="mono" style="font-size: 11px; color: var(--ink-2);">{status}</div>
+        </div>
     </div>
     ''', unsafe_allow_html=True)
     
-    # Mode toggle
-    col1, col2, col3 = st.columns([1, 1, 4])
+    col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 2])
     with col1:
-        if st.button("📺 WALL", use_container_width=True):
-            st.session_state.mode = "wall"
+        if st.button("📰 NEWSROOM", use_container_width=True, type="primary" if st.session_state.wall_variant == "newsroom" else "secondary"):
+            st.session_state.wall_variant = "newsroom"
+            st.rerun()
     with col2:
+        if st.button("📊 TELEMETRY", use_container_width=True, type="primary" if st.session_state.wall_variant == "telemetry" else "secondary"):
+            st.session_state.wall_variant = "telemetry"
+            st.rerun()
+    with col3:
+        if st.button("🗺️ MAP", use_container_width=True, type="primary" if st.session_state.wall_variant == "map" else "secondary"):
+            st.session_state.wall_variant = "map"
+            st.rerun()
+    with col4:
         if st.button("🖥️ OPERATOR", use_container_width=True):
             st.session_state.mode = "operator"
             st.rerun()
+            
+    # 3. RENDER VARIANT
+    variant = st.session_state.wall_variant
+    if variant == "newsroom":
+        render_wall_newsroom(data_dict)
+    elif variant == "telemetry":
+        render_wall_telemetry(data_dict)
+    else:
+        # Fallback for now while others are built
+        render_wall_newsroom(data_dict)
     
-    # Main metrics
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Pipeline", f"${total_pipeline/1e6:.1f}M")
-    c2.metric("Orders", f"{total_orders:,}")
-    c3.metric("At Risk", f"${at_risk_value/1e6:.2f}M", f"{at_risk_pct:.0f}%")
-    c4.metric("High Risk", high_risk_count)
-    c5.metric("Alerts", len([a for a in alerts if a['sev'] in ['CRITICAL', 'HIGH']]))
-    
-    st.divider()
-    
-    # Two column layout
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.markdown('<div class="section-header">🚨 Priority Alerts</div>', unsafe_allow_html=True)
-        for alert in alerts[:6]:
-            cls = 'critical' if alert['sev'] == 'CRITICAL' else 'high' if alert['sev'] == 'HIGH' else 'normal'
-            st.markdown(f'''
-            <div class="data-card {cls}">
-                <div class="card-title">{alert['title']}</div>
-                <div class="card-detail">{alert['detail']} • {alert['src']}</div>
+    # 4. TICKER TAPE (Common to all)
+    ticker_items = ""
+    for a in alerts[:8]:
+        ticker_items += f'''
+        <div style="display: flex; align-items: center; gap: 12px; flex-shrink: 0;">
+            <span class="mono" style="font-size: 11px; color: var(--accent);">● {a['src'].upper()}</span>
+            <span style="font-size: 12px; color: var(--ink-1);">{a['title']}</span>
+            <span style="color: var(--ink-4);">·</span>
+        </div>
+        '''
+    st.markdown(f'''
+    <div class="panel" style="margin-top: 32px; padding: 12px 20px; overflow: hidden;">
+        <div class="ticker-container">
+            <div class="lbl" style="color: var(--accent); flex-shrink: 0;">LIVE STREAM</div>
+            <div class="ticker-track">
+                {ticker_items} {ticker_items}
             </div>
-            ''', unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown('<div class="section-header">🌐 External Signals</div>', unsafe_allow_html=True)
-        for t in signals['traffic'][:4]:
-            badge_class = 'severe' if t['level'] == 'severe' else 'heavy' if t['level'] == 'heavy' else 'normal'
-            st.markdown(f'''
-            <div class="signal-card">
-                <div>
-                    <div class="signal-name">{t['corridor']}</div>
-                    <div class="signal-val">{t['delay_ratio']}x delay</div>
-                </div>
-                <div class="signal-badge {badge_class}">{t['level'].upper()}</div>
-            </div>
-            ''', unsafe_allow_html=True)
-    
-    # AI Brief section
-    if ai_service.available:
-        st.divider()
-        
-        metrics = {
-            'total_orders': total_orders,
-            'total_value': total_pipeline,
-            'high_risk_count': high_risk_count,
-            'at_risk_value': at_risk_value,
-            'at_risk_pct': at_risk_pct,
-            'critical_alerts': len([a for a in alerts if a['sev'] == 'CRITICAL']),
-            'high_alerts': len([a for a in alerts if a['sev'] == 'HIGH']),
-            'system_status': status,
-            'traffic_issues': signals['summary']['traffic']
-        }
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown('<div class="section-header">🤖 AI Executive Brief</div>', unsafe_allow_html=True)
-            with st.spinner("Generating brief..."):
-                brief = ai_service.generate_executive_brief(metrics, top_orders, signals['traffic'])
-            st.markdown(f'''
-            <div class="ai-explanation">
-                <div class="ai-explanation-header">🤖 Smart Analysis (Llama 3)</div>
-                <div class="ai-explanation-text">{brief}</div>
-            </div>
-            ''', unsafe_allow_html=True)
-        
-        with col2:
-            st.markdown('<div class="section-header">⚡ Top 5 Priority Orders</div>', unsafe_allow_html=True)
-            if top_orders:
-                top_5_value = sum(o['value'] for o in top_orders[:5])
-                concentration = (top_5_value / at_risk_value * 100) if at_risk_value > 0 else 0
-                st.markdown(f'''
-                <div class="top5-card">
-                    <div class="top5-header">🎯 Concentration: Top 5 = {concentration:.0f}% of risk (${top_5_value/1e6:.2f}M)</div>
-                    <div class="ai-explanation-text">
-                        {"<br>".join([f"#{o['order_id']}: ${o['value']:,.0f} | Customer {o['customer']}" for o in top_orders[:5]])}
-                    </div>
-                </div>
-                ''', unsafe_allow_html=True)
-
+        </div>
+    </div>
+    ''', unsafe_allow_html=True)
 
 # ============================================================
 # OPERATOR MODE
 # ============================================================
 
-def render_operator_mode():
-    """Render interactive operator mode."""
-    inject_styles()
+def render_order_drawer(order_id: int, orders_df: pd.DataFrame):
+    """Render a premium side-drawer for order drill-down."""
+    if orders_df is None or order_id is None:
+        return
+        
+    order = orders_df[orders_df['OrderNumber'] == order_id]
+    if order.empty:
+        return
+        
+    r = order.iloc[0]
     
+    # Close Button (Simple text for now, styled via CSS)
+    if st.button("✕ Close Panel", key="close_drawer_btn", use_container_width=True):
+        st.session_state.selected_order = None
+        st.rerun()
+
+    st.markdown(f'''
+    <div class="panel" style="padding: 24px; border-top: 4px solid var(--{"red" if r["RiskCategory"] == "High" else "amber" if r["RiskCategory"] == "Medium" else "green"});">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <div>
+                <div class="lbl">Order Detail</div>
+                <div class="num-xl" style="font-size: 28px;">SO-{int(r["OrderNumber"])}</div>
+            </div>
+            <div class="mono" style="text-align: right;">
+                <div class="lbl">Risk Score</div>
+                <div style="font-size: 24px; color: var(--{"red" if r["RiskCategory"] == "High" else "amber"});">{r["RiskProbability"]*100:.1f}%</div>
+            </div>
+        </div>
+        
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;">
+            <div><div class="lbl">Customer</div><div class="mono" style="font-size: 14px; margin-top: 4px;">K-{int(r["Customer"])}</div></div>
+            <div><div class="lbl">Region</div><div class="mono" style="font-size: 14px; margin-top: 4px;">{r["Country"]}</div></div>
+            <div><div class="lbl">Revenue</div><div class="mono" style="font-size: 14px; margin-top: 4px;">${r["TotalRevenue"]:,.0f}</div></div>
+            <div><div class="lbl">Items</div><div class="mono" style="font-size: 14px; margin-top: 4px;">{int(r["LineItems"])}</div></div>
+        </div>
+
+        <div class="lbl" style="margin-bottom: 12px;">ML Feature Importance</div>
+        <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px;">
+            <div style="display: flex; justify-content: space-between; font-size: 11px;"><span>Volume</span><span class="mono">0.42</span></div>
+            <div style="height: 4px; background: var(--line);"><div style="width: 42%; height: 100%; background: var(--accent);"></div></div>
+            <div style="display: flex; justify-content: space-between; font-size: 11px;"><span>Velocity</span><span class="mono">0.28</span></div>
+            <div style="height: 4px; background: var(--line);"><div style="width: 28%; height: 100%; background: var(--accent);"></div></div>
+        </div>
+
+        <div class="lbl" style="margin-bottom: 12px;">Impact Simulator (Executive View)</div>
+        <div class="panel raised" style="padding: 14px; margin-bottom: 24px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                <span style="font-size: 11px; color: var(--ink-2);">Strategy: Air Freight Reroute</span>
+                <span class="mono" style="font-size: 11px; color: var(--red);">-$4,200 Cost</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
+                <span style="font-size: 11px; color: var(--ink-2);">Revenue Protected</span>
+                <span class="mono" style="font-size: 11px; color: var(--green);">+${r["TotalRevenue"]:,.0f}</span>
+            </div>
+            <div style="height: 1px; background: var(--line); margin-bottom: 12px;"></div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span class="lbl" style="color: var(--ink);">Net Benefit</span>
+                <span class="num-xl" style="font-size: 20px; color: var(--green);">${r["TotalRevenue"]-4200:,.0f}</span>
+            </div>
+        </div>
+
+        <div style="margin-top: 12px; display: flex; gap: 12px;">
+            <button class="btn primary" style="flex: 1;">Approve & Execute</button>
+            <button class="btn" style="flex: 1;">Ignore Risk</button>
+        </div>
+    </div>
+    ''', unsafe_allow_html=True)
+
+def render_memory_module(memory: MemorySystem):
+    """Render the interactive memory learning loop module."""
+    st.markdown('<div class="lbl" style="margin-bottom: 12px;">Memory Learning Loop</div>', unsafe_allow_html=True)
+    
+    insights = memory.get_learning_insights()
+    
+    kpi_html = f'''
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-bottom: 24px;">
+        <div style="background: var(--bg-1); padding: 16px;">{wall_kpi("Recs", str(int(insights['total_recs'])))}</div>
+        <div style="background: var(--bg-1); padding: 16px;">{wall_kpi("Trust", f"{insights['trust_score']*100:.1f}%", tone="green" if insights['trust_score'] > 0.7 else "amber")}</div>
+        <div style="background: var(--bg-1); padding: 16px;">{wall_kpi("Success", str(int(insights['success_count'])))}</div>
+        <div style="background: var(--bg-1); padding: 16px;">{wall_kpi("Rate", f"{insights['adoption_rate']*100:.0f}%")}</div>
+    </div>
+    '''
+    st.markdown(kpi_html, unsafe_allow_html=True)
+    
+    st.markdown('<div class="lbl" style="margin-bottom: 16px;">Pending Feedback</div>', unsafe_allow_html=True)
+    
+    recs = memory.get_recent_recommendations(limit=10)
+    pending_recs = [r for r in recs if r['status'] == 'pending']
+    
+    if not pending_recs:
+        st.info("No recommendations currently pending feedback.")
+    else:
+        for r in pending_recs:
+            content = json.loads(r['content'])
+            st.markdown(f'''
+            <div class="panel" style="padding: 16px; margin-bottom: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <span class="mono" style="font-size: 10px; color: var(--accent);">{r['type'].upper()}</span>
+                    <span class="mono" style="font-size: 9px; color: var(--ink-3);">{r['timestamp']}</span>
+                </div>
+                <div style="font-size: 13px; color: var(--ink); margin-bottom: 12px;">{content.get('title', 'Recommendation')}</div>
+            ''', unsafe_allow_html=True)
+            
+            c1, c2, _ = st.columns([1, 1, 3])
+            with c1:
+                if st.button("✅ Confirm", key=f"conf_{r['id']}", use_container_width=True):
+                    memory.record_action(r['id'], "acted", "Confirmed via UI")
+                    st.rerun()
+            with c2:
+                if st.button("❌ Reject", key=f"rej_{r['id']}", use_container_width=True):
+                    memory.record_action(r['id'], "ignored", "Rejected via UI")
+                    st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+
+# ============================================================
+# ADVANCED FEATURES
+# ============================================================
+
+def render_sidebar_tweaks():
+    """Render premium UI tweaks in the sidebar."""
+    with st.sidebar:
+        st.markdown('<div class="lbl" style="margin-bottom: 12px;">UI Customization</div>', unsafe_allow_html=True)
+        
+        theme = st.selectbox("Palette", ["obsidian", "plex", "paper"], 
+                             index=["obsidian", "plex", "paper"].index(st.session_state.theme),
+                             key="theme_select")
+        if theme != st.session_state.theme:
+            st.session_state.theme = theme
+            st.rerun()
+            
+        density = st.selectbox("Density", ["regular", "compact"], 
+                               index=["regular", "compact"].index(st.session_state.density),
+                               key="density_select")
+        if density != st.session_state.density:
+            st.session_state.density = density
+            st.rerun()
+            
+        st.divider()
+        st.markdown('<div class="lbl" style="margin-bottom: 8px;">Simulation</div>', unsafe_allow_html=True)
+        if st.button("🔄 Hard Reset", use_container_width=True):
+            st.session_state.clear()
+            st.rerun()
+
+def render_command_palette(orders_df):
+    """Render a search overlay."""
+    with st.container():
+        st.markdown('<div class="panel" style="padding: 16px; margin-bottom: 24px; border-top: 3px solid var(--accent);">', unsafe_allow_html=True)
+        query = st.text_input("🔍 Search orders, customers, or modules...", placeholder="e.g. SO-12345", label_visibility="collapsed")
+        
+        if query:
+            # Simple filtering
+            if orders_df is not None:
+                results = orders_df[orders_df['doc'].astype(str).str.contains(query) | 
+                                    orders_df['customer'].astype(str).str.contains(query)].head(5)
+                
+                if not results.empty:
+                    for _, r in results.iterrows():
+                        if st.button(f"SO-{r['doc']} | {r['customer']} | ${r['value']:,.0f}", key=f"search_{r['doc']}", use_container_width=True):
+                            st.session_state.selected_order = r['doc']
+                            st.session_state.active_module = "pipeline"
+                            st.session_state.show_cmd = False
+                            st.rerun()
+                else:
+                    st.markdown('<div class="mono" style="font-size: 11px; color: var(--ink-3);">No matches found</div>', unsafe_allow_html=True)
+        
+        if st.button("Close Palette", use_container_width=True):
+            st.session_state.show_cmd = False
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# ============================================================
+# OPERATOR MODE MAIN RENDERER
+# ============================================================
+
+def render_operator_mode():
+    """Render interactive operator workspace."""
+    inject_styles()
+    render_sidebar_tweaks()
+    
+    # 1. DATA AGGREGATION
     ml_models = load_ml_models()
     ai_service = get_ai_service()
     actuals, plan, var_df, yearly = load_gbi_data()
     va05 = generate_va05_orders()
     signals = generate_external_signals()
-    fc, fc_diag = generate_forecast(yearly) if yearly is not None else ([], {})
-    
     ml_orders = ml_score_orders(actuals, ml_models) if actuals is not None else None
-    ml_demand = ml_forecast_demand(actuals, ml_models) if actuals is not None else None
     alerts = generate_alerts(va05, var_df, signals, ml_orders)
-    
-    # Convert to dict for AI
-    top_orders = orders_to_dict_list(ml_orders, 10) if ml_orders is not None else []
+    memory = get_memory_system()
+    mem_stats = memory.get_learning_insights()
     
     # Calculate metrics
     if ml_orders is not None and len(ml_orders) > 0:
@@ -1280,9 +1378,7 @@ def render_operator_mode():
     
     at_risk_pct = at_risk_value / total_pipeline * 100 if total_pipeline > 0 else 0
     status = signals['summary']['overall']
-    status_class = status.lower()
     
-    # Metrics dict for AI
     metrics = {
         'total_orders': total_orders,
         'total_value': total_pipeline,
@@ -1291,59 +1387,98 @@ def render_operator_mode():
         'at_risk_pct': at_risk_pct,
         'critical_alerts': len([a for a in alerts if a['sev'] == 'CRITICAL']),
         'high_alerts': len([a for a in alerts if a['sev'] == 'HIGH']),
-        'system_status': status,
-        'traffic_issues': signals['summary']['traffic']
+        'system_status': status
     }
+
+    # 2. TOP BAR
+    render_top_bar(status)
     
-    # Header
-    badges = ""
-    if ml_models['available']:
-        badges += '<span class="ml-badge">🧠 ML</span>'
-    if ai_service.available:
-        badges += '<span class="ai-badge">🤖 AI</span>'
-    
-    st.markdown(f'''
-    <div class="main-header">
-        <div>{Config.APP_NAME} <span style="color:#64748b;font-size:14px;">v{Config.VERSION} OPERATOR</span>{badges}</div>
-        <div class="status-badge status-{status_class}">{status}</div>
-    </div>
-    ''', unsafe_allow_html=True)
-    
-    # Mode toggle
-    col1, col2, col3 = st.columns([1, 1, 4])
+    # 3. GLOBAL VIEW SWITCH (Quick Toggle)
+    col1, col2, _ = st.columns([1, 1, 6])
     with col1:
         if st.button("📺 WALL", use_container_width=True):
             st.session_state.mode = "wall"
             st.rerun()
     with col2:
-        if st.button("🖥️ OPERATOR", use_container_width=True):
-            st.session_state.mode = "operator"
+        if st.button("⌨️ CMD", use_container_width=True, help="Search"):
+            st.session_state.show_cmd = not st.session_state.get('show_cmd', False)
+            st.rerun()
+            
+    st.markdown('<div style="height: 12px;"></div>', unsafe_allow_html=True)
+
+    # 3b. Command Palette Overlay
+    if st.session_state.get('show_cmd', False):
+        render_command_palette(va05)
+
+    # 4. WORKSPACE LAYOUT
+    rail_col, canvas_col, queue_col = st.columns([1.2, 5, 2.2])
     
-    # Tabs
-    tabs = st.tabs(["📊 Overview", "📦 Logistics", "💰 Finance", "📈 Forecast", "🌐 Signals", "🚨 Alerts", "🎮 Scenarios", "🧠 ML Intel", "📋 Decisions", "📚 Learning", "🔌 Sources"])
-    
-    # Overview
-    with tabs[0]:
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Pipeline", f"${total_pipeline/1e6:.1f}M")
-        c2.metric("Orders", f"{total_orders:,}")
-        c3.metric("At Risk", f"${at_risk_value/1e6:.2f}M", f"{at_risk_pct:.0f}%")
-        c4.metric("High Risk", high_risk_count)
-        c5.metric("Alerts", len([a for a in alerts if a['sev'] in ['CRITICAL', 'HIGH']]))
+    with rail_col:
+        render_module_rail()
         
-        st.divider()
+    with canvas_col:
+        active = st.session_state.active_module
         
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown('<div class="section-header">🚨 Priority Alerts</div>', unsafe_allow_html=True)
-            for a in alerts[:5]:
-                cls = 'critical' if a['sev'] == 'CRITICAL' else 'high'
-                st.markdown(f'<div class="data-card {cls}"><div class="card-title">{a["title"]}</div><div class="card-detail">{a["detail"]} • {a["src"]}</div></div>', unsafe_allow_html=True)
-        with c2:
-            st.markdown('<div class="section-header">🌐 Signals</div>', unsafe_allow_html=True)
-            for t in signals['traffic'][:3]:
-                b = 'critical' if t['level'] == 'severe' else 'high' if t['level'] == 'heavy' else 'normal'
-                st.markdown(f'<div class="signal-card"><div class="signal-content"><div class="signal-name">{t["corridor"]}</div><div class="signal-val">{t["delay_ratio"]}x</div></div><div class="signal-badge {b}">{t["level"].upper()}</div></div>', unsafe_allow_html=True)
+        # Overview Module
+        if active == "overview":
+            st.markdown('<div class="lbl" style="margin-bottom: 12px;">Overview Module</div>', unsafe_allow_html=True)
+            # KPI Grid
+            kpi_html = f'''
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-bottom: 24px;">
+                <div style="background: var(--bg-1); padding: 16px;">{wall_kpi("Pipeline", f"${total_pipeline/1e6:.1f}M", size="md")}</div>
+                <div style="background: var(--bg-1); padding: 16px;">{wall_kpi("At-Risk", f"${at_risk_value/1e6:.2f}M", tone="red", size="md")}</div>
+                <div style="background: var(--bg-1); padding: 16px;">{wall_kpi("Trust", f"{mem_stats['trust_score']*100:.0f}%", tone="green", size="md")}</div>
+            </div>
+            '''
+            st.markdown(kpi_html, unsafe_allow_html=True)
+            
+            # Sub-grid
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                alerts_html = ""
+                for a in alerts[:5]:
+                    sev = "red" if a['sev'] == "CRITICAL" else "amber" if a['sev'] == "HIGH" else "green"
+                    alerts_html += f'<div style="margin-bottom:10px;"><div class="dot {sev}"></div> <span class="mono" style="font-size:12px;">{a["title"]}</span></div>'
+                st.markdown(wall_tile("Priority Alerts", "live status", alerts_html), unsafe_allow_html=True)
+            with sc2:
+                traffic_html = ""
+                for t in signals['traffic'][:3]:
+                    tone = "red" if t['level'] == "severe" else "amber" if t['level'] == "heavy" else "green"
+                    traffic_html += f'<div style="margin-bottom:8px; display:flex; justify-content:space-between;"><span style="font-size:12px;">{t["corridor"]}</span> <span class="mono" style="color:var(--{tone});">{t["delay_ratio"]}x</span></div>'
+                st.markdown(wall_tile("Logistics Pulse", "lane telemetry", traffic_html), unsafe_allow_html=True)
+        
+        # Pipeline Module
+        elif active == "pipeline":
+            st.markdown('<div class="lbl" style="margin-bottom: 12px;">Pipeline Module</div>', unsafe_allow_html=True)
+            if ml_orders is not None:
+                if st.session_state.selected_order:
+                    render_order_drawer(st.session_state.selected_order, ml_orders)
+                else:
+                    high_risk = ml_orders[ml_orders['RiskCategory'] == 'High'].head(10)
+                    for _, r in high_risk.iterrows():
+                        order_id = int(r["OrderNumber"])
+                        st.markdown(f'''
+                        <div class="panel" style="padding: 12px; margin-bottom: 8px; border-left: 3px solid var(--red);">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <span class="mono" style="font-size: 12px; color: var(--ink);">SO-{order_id}</span>
+                                <span class="mono" style="font-size: 12px; color: var(--red);">{r["RiskProbability"]*100:.0f}% Risk</span>
+                            </div>
+                            <div style="font-size: 11px; color: var(--ink-2); margin-top: 4px; margin-bottom: 8px;">Customer {int(r["Customer"])} · ${r["TotalRevenue"]:,.0f}</div>
+                        </div>
+                        ''', unsafe_allow_html=True)
+                        if st.button(f"Drill into SO-{order_id}", key=f"drill_{order_id}"):
+                            st.session_state.selected_order = order_id
+                            st.rerun()
+
+        # Memory Module
+        elif active == "memory":
+            render_memory_module(memory)
+        
+        else:
+            st.info(f"Module '{active.capitalize()}' is being upgraded to the premium design language.")
+
+    with queue_col:
+        render_action_queue(alerts, ai_service, metrics)
     
     # Logistics
     with tabs[1]:
