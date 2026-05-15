@@ -87,8 +87,41 @@ The project is organized for professional maintenance and scalability:
 
 ---
 
-## 🔌 Going Live with Real APIs
-The platform uses high-fidelity mock data by default. To enable live API feeds:
+## 🤖 Enabling AI Analysis
+
+The platform runs without an AI key (graceful degradation), but real analysis unlocks the moment you add one. Set **exactly one** of the following:
+
+| Key | Provider | Cost | Best for |
+|-----|----------|------|----------|
+| `ANTHROPIC_API_KEY` | Claude claude-opus-4-7 | Paid | Best quality |
+| `GEMINI_API_KEY` | Gemini 1.5 Flash | **Free** (250K tok/min) | Primary deployment |
+| `GROQ_API_KEY` | Llama 3.1 70B | **Free** (14.4K req/day) | Backup / fallback |
+
+**Gemini (recommended free option)** — get a key at [aistudio.google.com](https://aistudio.google.com):
+```bash
+# Windows
+set GEMINI_API_KEY=AIza...
+
+# Mac/Linux
+export GEMINI_API_KEY=AIza...
+```
+
+**NVIDIA NIM / Groq** — also free, get keys at [build.nvidia.com](https://build.nvidia.com) or [console.groq.com](https://console.groq.com):
+```bash
+set GROQ_API_KEY=gsk_...
+```
+
+**Claude (when you're ready to upgrade)** — [console.anthropic.com](https://console.anthropic.com):
+```bash
+set ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Priority order: Anthropic → Gemini → Groq. The app auto-detects whichever key is present.
+
+---
+
+## 🔌 Going Live with Real External APIs
+The platform uses high-fidelity mock data by default. To enable live traffic, market, and satellite feeds:
 
 ```bash
 # Set API keys in your environment

@@ -1,18 +1,23 @@
 """
-AABS Control Tower - Claude AI Service
+AABS Control Tower - AI Service (Multi-Provider)
 
-Real AI analysis using the Anthropic SDK with prompt caching.
-Requires: ANTHROPIC_API_KEY environment variable.
+Provider priority — set exactly one key:
+  ANTHROPIC_API_KEY  →  Claude claude-opus-4-7  (best quality, paid)
+  GEMINI_API_KEY     →  Gemini 1.5 Flash  (primary free tier, 250K tok/min)
+  GROQ_API_KEY       →  Llama 3.1 70B on Groq  (backup free tier, 14.4K req/day)
+
+All providers share the same public interface so app.py never changes.
+Prompt caching is applied automatically when using Anthropic.
 """
 
 import os
 import json
-import anthropic
 from datetime import datetime
-from typing import Optional
 
-# Stable system prompt — cached on first request, reused across all calls.
-# Keep this frozen; dynamic context goes in the user message.
+# ---------------------------------------------------------------------------
+# Stable system prompt
+# Keep this frozen; dynamic context goes in the user message only.
+# ---------------------------------------------------------------------------
 _SYSTEM_PROMPT = """You are the AABS Control Tower decision intelligence engine. \
 You analyze supply chain data — orders, logistics corridors, market signals, and \
 financial variance — to help operations managers act decisively.
@@ -26,75 +31,125 @@ Rules:
 - When returning JSON, respond with only valid JSON and no markdown fences"""
 
 
-class ClaudeAIService:
+class AIService:
     """
-    Real AI service backed by Claude claude-opus-4-7.
+    Multi-provider AI service.
 
-    The system prompt is sent with cache_control so it is cached after the
-    first request, cutting input token cost ~90% on all subsequent calls.
+    Detects which API key is present at startup and routes all calls through
+    that provider. Anthropic uses prompt caching; Gemini and Groq use their
+    OpenAI-compatible endpoints via the openai SDK.
     """
 
     def __init__(self):
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if api_key:
-            try:
-                self.client = anthropic.Anthropic(api_key=api_key)
-                self.available = True
-                self.model = "claude-opus-4-7"
-            except Exception:
-                self.client = None
-                self.available = False
-                self.model = "disabled"
-        else:
-            self.client = None
-            self.available = False
-            self.model = "disabled"
+        self.available = False
+        self.provider = "disabled"
+        self.model = "disabled"
+        self.client = None
 
-    # ------------------------------------------------------------------
-    # Internal helper
-    # ------------------------------------------------------------------
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        gemini_key = os.getenv("GEMINI_API_KEY")
+        groq_key = os.getenv("GROQ_API_KEY")
+
+        if anthropic_key:
+            try:
+                import anthropic as _anthropic
+                self._anthropic = _anthropic
+                self.client = _anthropic.Anthropic(api_key=anthropic_key)
+                self.provider = "anthropic"
+                self.model = "claude-opus-4-7"
+                self.available = True
+            except Exception:
+                pass
+
+        if not self.available and gemini_key:
+            try:
+                from openai import OpenAI
+                self.client = OpenAI(
+                    api_key=gemini_key,
+                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                )
+                self.provider = "gemini"
+                self.model = "gemini-1.5-flash"
+                self.available = True
+            except Exception:
+                pass
+
+        if not self.available and groq_key:
+            try:
+                from openai import OpenAI
+                self.client = OpenAI(
+                    api_key=groq_key,
+                    base_url="https://api.groq.com/openai/v1",
+                )
+                self.provider = "groq"
+                self.model = "llama-3.1-70b-versatile"
+                self.available = True
+            except Exception:
+                pass
+
+    # -----------------------------------------------------------------------
+    # Internal helpers
+    # -----------------------------------------------------------------------
 
     def _call(self, user_message: str, max_tokens: int = 256) -> str:
-        """Make a prompt-cached Claude API call. Returns plain text."""
+        """Route a prompt to the active provider and return plain text."""
         if not self.available:
-            return "AI analysis unavailable. Set ANTHROPIC_API_KEY to enable."
+            return (
+                "AI analysis unavailable. "
+                "Set ANTHROPIC_API_KEY, GEMINI_API_KEY, or GROQ_API_KEY to enable."
+            )
         try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                system=[
-                    {
-                        "type": "text",
-                        "text": _SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                messages=[{"role": "user", "content": user_message}],
-            )
-            return next(
-                (b.text for b in response.content if b.type == "text"), ""
-            )
-        except anthropic.AuthenticationError:
-            self.available = False
-            return "Invalid API key. Check ANTHROPIC_API_KEY."
-        except anthropic.RateLimitError:
-            return "Rate limit reached. Please wait before retrying."
-        except anthropic.APIStatusError as e:
-            return f"API error {e.status_code}: {e.message[:80]}"
-        except Exception as e:
-            return f"Analysis unavailable: {str(e)[:80]}"
+            if self.provider == "anthropic":
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=max_tokens,
+                    system=[
+                        {
+                            "type": "text",
+                            "text": _SYSTEM_PROMPT,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    messages=[{"role": "user", "content": user_message}],
+                )
+                return next(
+                    (b.text for b in response.content if b.type == "text"), ""
+                )
+            else:
+                # Gemini and Groq share the OpenAI-compatible interface
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    max_tokens=max_tokens,
+                    messages=[
+                        {"role": "system", "content": _SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                )
+                return response.choices[0].message.content or ""
 
-    def _call_json(self, user_message: str, max_tokens: int = 400, fallback: dict = None) -> dict:
-        """Call Claude expecting a JSON response. Falls back to `fallback` on parse failure."""
+        except Exception as e:
+            err = str(e).lower()
+            if any(k in err for k in ("auth", "api key", "401", "403")):
+                self.available = False
+                return f"Invalid {self.provider} API key — check your environment variable."
+            if any(k in err for k in ("rate", "429", "quota")):
+                return f"Rate limit reached on {self.provider}. Please wait before retrying."
+            return f"Analysis unavailable ({self.provider}): {str(e)[:100]}"
+
+    def _call_json(
+        self, user_message: str, max_tokens: int = 400, fallback: dict = None
+    ) -> dict:
+        """Call the active provider expecting a JSON response.
+        Falls back to `fallback` dict on any parse failure."""
         raw = self._call(user_message, max_tokens=max_tokens)
         try:
             return json.loads(raw.strip())
         except (json.JSONDecodeError, ValueError):
             return fallback or {}
 
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
     # Public analysis methods
-    # ------------------------------------------------------------------
+    # -----------------------------------------------------------------------
 
     def analyze_order_risk(self, order_data: dict) -> str:
         order_id = order_data.get("order_id", "N/A")
@@ -131,7 +186,9 @@ class ClaudeAIService:
         )
         return self._call(prompt, max_tokens=150)
 
-    def generate_executive_brief(self, metrics: dict, alerts: list, ml_summary: dict = None) -> str:
+    def generate_executive_brief(
+        self, metrics: dict, alerts: list, ml_summary: dict = None
+    ) -> str:
         critical = [a for a in alerts if a.get("sev") == "CRITICAL"]
         at_risk = metrics.get("at_risk_value", 0)
         total = max(metrics.get("total_value", 1), 1)
@@ -186,13 +243,15 @@ class ClaudeAIService:
             "recovery_probability": 75,
         }
         data = self._call_json(prompt, max_tokens=200, fallback=fallback)
-        data.update({
-            "order_id": order_id,
-            "customer": customer,
-            "value": value,
-            "risk_score": risk_score,
-            "risk_level": "CRITICAL" if risk_score > 0.7 else "HIGH",
-        })
+        data.update(
+            {
+                "order_id": order_id,
+                "customer": customer,
+                "value": value,
+                "risk_score": risk_score,
+                "risk_level": "CRITICAL" if risk_score > 0.7 else "HIGH",
+            }
+        )
         return data
 
     def generate_mitigation_playbook(self, issue_type: str, context: dict) -> dict:
@@ -207,7 +266,12 @@ class ClaudeAIService:
             max_tokens=300,
             fallback={
                 "title": f"{issue_type} Mitigation",
-                "steps": ["Assess scope", "Notify stakeholders", "Implement fix", "Monitor outcome"],
+                "steps": [
+                    "Assess scope",
+                    "Notify stakeholders",
+                    "Implement fix",
+                    "Monitor outcome",
+                ],
                 "timeline": "24-48 hours",
                 "owner": "Operations Team",
                 "success_metric": "Issue resolved without revenue impact",
@@ -235,7 +299,9 @@ class ClaudeAIService:
             },
         )
 
-    def generate_daily_action_plan(self, metrics: dict, top_orders: list, alerts: list) -> dict:
+    def generate_daily_action_plan(
+        self, metrics: dict, top_orders: list, alerts: list
+    ) -> dict:
         high_risk_count = metrics.get("high_risk_count", 0)
         at_risk = metrics.get("at_risk_value", 0)
         critical_count = len([a for a in alerts if a.get("sev") == "CRITICAL"])
@@ -278,3 +344,7 @@ class ClaudeAIService:
                 ],
             },
         )
+
+
+# Backward-compat alias so any code still referencing ClaudeAIService keeps working
+ClaudeAIService = AIService

@@ -68,12 +68,12 @@ except ImportError:
 # AI SERVICE (Claude-backed)
 # ============================================================
 
-from core.ai_service import ClaudeAIService
+from core.ai_service import AIService
 
 @st.cache_resource
 def get_ai_service():
-    """Return a singleton ClaudeAIService. Cached for the lifetime of the server process."""
-    return ClaudeAIService()
+    """Return a singleton AIService. Cached for the lifetime of the server process."""
+    return AIService()
 
 # ============================================================
 # MEMORY SYSTEM - Learning Loops (SQLite Backend)
